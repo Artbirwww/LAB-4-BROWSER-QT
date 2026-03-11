@@ -33,16 +33,18 @@ class AdvancedBrowser(QMainWindow):
         self.nav_bar = NavigationBar(self)
         self.favourites = BookmarksBar(self)
         self.tabs = TabWidget(self)
+        # self.tabs = CustomTabWidget(self)
         
         main_layout.addWidget(self.title_bar)
         main_layout.addWidget(self.nav_bar)
         main_layout.addWidget(self.favourites)
         main_layout.addWidget(self.tabs)
         
+        
         self.load_bookmarks()
-        
+
         self.apply_theme()
-        
+
         self.add_new_tab()
         
         self.dragging = False
@@ -66,7 +68,7 @@ class AdvancedBrowser(QMainWindow):
     def apply_theme(self):
         style = self.theme_switcher.get_theme_style(self.current_theme)
         self.setStyleSheet(style)
-        
+
     def change_theme(self, theme_name):
         self.current_theme = theme_name
         self.database.save_setting("theme", theme_name)
@@ -96,11 +98,11 @@ class AdvancedBrowser(QMainWindow):
                 if "." in url and not " " in url:
                     url = "http://" + url
                 else:
-                    url = "https://www.google.com/search?q=" + url.replace(" ", "+")
+                    url = "https://ya.ru/search/?text=" + url.replace(" ", "+")
             self.current_browser().setUrl(QUrl(url))
-            
+
     def go_home(self):
-        self.current_browser().setUrl(QUrl("https://www.google.com"))
+        self.current_browser().setUrl(QUrl("https://ya.ru"))
         
     def add_bookmark(self):
         browser = self.current_browser()
