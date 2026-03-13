@@ -37,6 +37,8 @@ class BookmarksDialog(QDialog):
         
     def load_bookmarks(self):
         """Загружает все закладки из базы данных"""
+        if hasattr(self.browser_window, 'incognito') and self.browser_window.incognito:
+            return
         self.bookmarks_list.clear()
         bookmarks = self.browser_window.database.get_all_bookmarks()
         

@@ -35,6 +35,9 @@ class HistoryDialog(QDialog):
         self.setLayout(layout)
         
     def load_history(self):
+        """Загружает все закладки из базы данных"""
+        if hasattr(self.browser_window, 'incognito') and self.browser_window.incognito:
+            return
         history_items = self.browser_window.database.get_history()
         
         for title, url, time in history_items:

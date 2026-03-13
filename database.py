@@ -58,12 +58,16 @@ class Database:
         return self.cursor.fetchall()
         
     def add_to_history(self, title, url):
-        if url and url != "about:blank":
-            self.cursor.execute(
-                "INSERT INTO history (title, url) VALUES (?, ?)",
-                (title, url)
-            )
-            self.conn.commit()
+        """Добавляет запись в историю (проверка на инкогнито должна быть на уровне окна)"""
+        if url and url != "about:blank" and url != "https://ya.ru" and "Загрузка..." not in title:
+            try:
+                self.cursor.execute(
+                    "INSERT INTO history (title, url) VALUES (?, ?)",
+                    (title, url)
+                )
+                self.conn.commit()
+            except Exception as e:
+                print(f"Ошибка при добавлении в историю: {e}")
             
     def clear_history(self):
         self.cursor.execute("DELETE FROM history")

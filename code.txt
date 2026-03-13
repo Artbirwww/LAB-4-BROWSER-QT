@@ -1,0 +1,2127 @@
+================================================================================
+                           СТРУКТУРА ПРОЕКТА
+================================================================================
+
+LAB 4/
+├── main.py                    # Точка входа приложения
+├── browser_window.py          # Основное окно браузера
+├── database.py                # Работа с SQLite базой данных
+├── favourites_dialog.py       # Диалог управления закладками
+├── favourites.py              # Панель закладок
+├── history_dialog.py          # Диалог истории просмотров
+├── navbar.py                  # Панель навигации
+├── tab_widget.py              # Виджет вкладок
+├── theme_switcher.py          # Менеджер тем оформления
+├── title_bar.py               # Кастомная заголовочная панель
+├── browser.spec               # Spec-файл для PyInstaller
+├── .gitignore                 # Git ignore файл
+├── nav/                       # Папка с иконками
+│   ├── add_5ztfflf69ahd_32.png
+│   ├── back_8e26he9iqu7d_32.png
+│   └── ...
+├── build/                     # Папка сборки
+├── dist/                      # Дистрибутив
+└── __pycache__/               # Кэш Python
+
+================================================================================
+                              ФАЙЛЫ ПРОЕКТА
+================================================================================
+
+================================================================================
+main.py
+================================================================================
+
+import sys
+from PyQt5.QtWidgets import QApplication
+from browser_window import AdvancedBrowser
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+
+    browser = AdvancedBrowser(incognito=False)
+    browser.show()
+
+    sys.exit(app.exec_())
+
+================================================================================
+browser_window.py
+================================================================================
+
+from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QMessageBox, QInputDialog, QShortcut
+from PyQt5.QtCore import Qt, QPoint, QUrl
+from PyQt5.QtGui import QKeySequence
+from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile
+
+from database import Database
+from theme_switcher import ThemeManager
+from title_bar import TitleBar
+from navbar import NavigationBar
+from favourites import BookmarksBar
+from tab_widget import TabWidget
+from history_dialog import HistoryDialog
+from favourites_dialog import BookmarksDialog
+
+class AdvancedBrowser(QMainWindow):
+    def __init__(self, incognito=False):
+        super().__init__()
+        self.incognito = incognito
+
+        if incognito:
+            self.setWindowTitle("POVTIAS CO. INC. BROWSER - ИНКОГНИТО")
+        else:
+            self.setWindowTitle("POVTIAS CO. INC. BROWSER")
+
+        # Устанавливаем геометрию, но потом сразу разворачиваем на весь экран
+        self.setGeometry(100, 100, 1200, 800)
+
+        # Убираем стандартный заголовок окна для кастомного
+        self.setWindowFlags(Qt.FramelessWindowHint)
+
+        # База данных только для обычного режима
+        if not incognito:
+            self.database = Database()
+        else:
+            self.database = None
+
+        self.theme_switcher = ThemeManager()
+
+        # Для инкогнито всегда используем темную тему
+        if incognito:
+            self.current_theme = "dark"
+        else:
+            self.current_theme = self.database.get_setting("theme", "light") if self.database else "light"
+
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        self.title_bar = TitleBar(self)
+        self.nav_bar = NavigationBar(self)
+        self.favourites = BookmarksBar(self)
+        self.tabs = TabWidget(self, incognito)
+
+        main_layout.addWidget(self.title_bar)
+        main_layout.addWidget(self.nav_bar)
+        main_layout.addWidget(self.favourites)
+        main_layout.addWidget(self.tabs)
+
+        if not incognito:
+            self.load_bookmarks()
+
+        self.apply_theme()
+        self.add_new_tab()
+
+        self.dragging = False
+        self.drag_position = QPoint()
+
+        # Устанавливаем шорткаты
+        self.setup_shortcuts()
+
+        # Разворачиваем окно на весь экран после инициализации
+        # Используем QTimer чтобы окно успело полностью инициализироваться
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(100, self.showMaximized)
+
+    def setup_shortcuts(self):
+        """Настройка горячих клавиш"""
+
+        # Навигация
+        self.shortcut_back = QShortcut(QKeySequence("Alt+Left"), self)
+        self.shortcut_back.activated.connect(self.go_back)
+
+        self.shortcut_forward = QShortcut(QKeySequence("Alt+Right"), self)
+        self.shortcut_forward.activated.connect(self.go_forward)
+
+        self.shortcut_reload = QShortcut(QKeySequence("Ctrl+R"), self)
+        self.shortcut_reload.activated.connect(self.reload_page)
+
+        self.shortcut_home = QShortcut(QKeySequence("Alt+Home"), self)
+        self.shortcut_home.activated.connect(self.go_home)
+
+        # Вкладки
+        self.shortcut_new_tab = QShortcut(QKeySequence("Ctrl+T"), self)
+        self.shortcut_new_tab.activated.connect(lambda: self.add_new_tab())
+
+        self.shortcut_close_tab = QShortcut(QKeySequence("Ctrl+W"), self)
+        self.shortcut_close_tab.activated.connect(self.close_current_tab)
+
+        self.shortcut_next_tab = QShortcut(QKeySequence("Ctrl+Tab"), self)
+        self.shortcut_next_tab.activated.connect(self.next_tab)
+
+        self.shortcut_prev_tab = QShortcut(QKeySequence("Ctrl+Shift+Tab"), self)
+        self.shortcut_prev_tab.activated.connect(self.prev_tab)
+
+        # Цифровые шорткаты для переключения на конкретные вкладки (Ctrl+1..8)
+        for i in range(1, 9):
+            shortcut = QShortcut(QKeySequence(f"Ctrl+{i}"), self)
+            shortcut.activated.connect(lambda idx=i-1: self.switch_to_tab(idx))
+
+        # Окна
+        self.shortcut_new_window = QShortcut(QKeySequence("Ctrl+N"), self)
+        self.shortcut_new_window.activated.connect(self.open_new_window)
+
+        self.shortcut_incognito = QShortcut(QKeySequence("Ctrl+Shift+N"), self)
+        self.shortcut_incognito.activated.connect(self.open_incognito_window)
+
+        self.shortcut_fullscreen = QShortcut(QKeySequence("F11"), self)
+        self.shortcut_fullscreen.activated.connect(self.toggle_fullscreen)
+
+        # Поиск и адресная строка
+        self.shortcut_focus_url = QShortcut(QKeySequence("Ctrl+L"), self)
+        self.shortcut_focus_url.activated.connect(self.focus_url_bar)
+
+        self.shortcut_focus_url_alt = QShortcut(QKeySequence("Alt+D"), self)
+        self.shortcut_focus_url_alt.activated.connect(self.focus_url_bar)
+
+        self.shortcut_search = QShortcut(QKeySequence("Ctrl+K"), self)
+        self.shortcut_search.activated.connect(self.focus_search)
+
+        # Закладки и история
+        self.shortcut_bookmark = QShortcut(QKeySequence("Ctrl+D"), self)
+        self.shortcut_bookmark.activated.connect(self.add_bookmark)
+
+        self.shortcut_bookmarks = QShortcut(QKeySequence("Ctrl+Shift+B"), self)
+        self.shortcut_bookmarks.activated.connect(self.show_all_bookmarks)
+
+        self.shortcut_history = QShortcut(QKeySequence("Ctrl+H"), self)
+        self.shortcut_history.activated.connect(self.show_history)
+
+        self.shortcut_clear_history = QShortcut(QKeySequence("Ctrl+Shift+Del"), self)
+        self.shortcut_clear_history.activated.connect(self.clear_history)
+
+        # Масштабирование
+        self.shortcut_zoom_in = QShortcut(QKeySequence("Ctrl+="), self)
+        self.shortcut_zoom_in.activated.connect(self.zoom_in)
+
+        self.shortcut_zoom_out = QShortcut(QKeySequence("Ctrl+-"), self)
+        self.shortcut_zoom_out.activated.connect(self.zoom_out)
+
+        self.shortcut_zoom_reset = QShortcut(QKeySequence("Ctrl+0"), self)
+        self.shortcut_zoom_reset.activated.connect(self.zoom_reset)
+
+        # Дополнительные функции
+        self.shortcut_print = QShortcut(QKeySequence("Ctrl+P"), self)
+        self.shortcut_print.activated.connect(self.print_page)
+
+        self.shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
+        self.shortcut_save.activated.connect(self.save_page)
+
+        self.shortcut_find = QShortcut(QKeySequence("Ctrl+F"), self)
+        self.shortcut_find.activated.connect(self.find_in_page)
+
+        self.shortcut_stop = QShortcut(QKeySequence("Esc"), self)
+        self.shortcut_stop.activated.connect(self.stop_loading)
+
+    def go_back(self):
+        """Перейти назад"""
+        browser = self.current_browser()
+        if browser and browser.history().canGoBack():
+            browser.back()
+
+    def go_forward(self):
+        """Перейти вперед"""
+        browser = self.current_browser()
+        if browser and browser.history().canGoForward():
+            browser.forward()
+
+    def reload_page(self):
+        """Обновить страницу"""
+        browser = self.current_browser()
+        if browser:
+            browser.reload()
+
+    def close_current_tab(self):
+        """Закрыть текущую вкладку"""
+        current_index = self.tabs.tab_bar.currentIndex()
+        if current_index >= 0:
+            self.tabs.close_tab(current_index)
+
+    def next_tab(self):
+        """Переключиться на следующую вкладку"""
+        count = self.tabs.count()
+        if count > 1:
+            current = self.tabs.tab_bar.currentIndex()
+            next_index = (current + 1) % count
+            self.tabs.tab_bar.setCurrentIndex(next_index)
+
+    def prev_tab(self):
+        """Переключиться на предыдущую вкладку"""
+        count = self.tabs.count()
+        if count > 1:
+            current = self.tabs.tab_bar.currentIndex()
+            prev_index = (current - 1) % count
+            self.tabs.tab_bar.setCurrentIndex(prev_index)
+
+    def switch_to_tab(self, index):
+        """Переключиться на вкладку по индексу"""
+        if 0 <= index < self.tabs.count():
+            self.tabs.tab_bar.setCurrentIndex(index)
+
+    def open_new_window(self):
+        """Открыть новое окно"""
+        from browser_window import AdvancedBrowser
+        self.new_window = AdvancedBrowser(incognito=False)
+        self.new_window.show()
+
+    def open_incognito_window(self):
+        """Открыть окно инкогнито"""
+        from browser_window import AdvancedBrowser
+        self.incognito_window = AdvancedBrowser(incognito=True)
+        self.incognito_window.show()
+
+    def toggle_fullscreen(self):
+        """Переключить полноэкранный режим"""
+        if self.isFullScreen():
+            self.showMaximized()  # Возвращаем в развернутое состояние, но не в обычное
+            # Обновляем иконку в title_bar
+            if hasattr(self, 'title_bar'):
+                self.title_bar.maximize_btn.setText("□")
+                self.title_bar.maximize_btn.setToolTip("Развернуть")
+        else:
+            self.showFullScreen()
+            # Обновляем иконку в title_bar
+            if hasattr(self, 'title_bar'):
+                self.title_bar.maximize_btn.setText("❐")
+                self.title_bar.maximize_btn.setToolTip("Восстановить")
+
+    def focus_url_bar(self):
+        """Фокусировка на адресной строке"""
+        self.nav_bar.url_bar.setFocus()
+        self.nav_bar.url_bar.selectAll()
+
+    def focus_search(self):
+        """Фокусировка на поиске"""
+        self.nav_bar.url_bar.setFocus()
+        self.nav_bar.url_bar.clear()
+        self.nav_bar.url_bar.setPlaceholderText("Поиск...")
+
+    def zoom_in(self):
+        """Увеличить масштаб"""
+        browser = self.current_browser()
+        if browser:
+            browser.setZoomFactor(browser.zoomFactor() + 0.1)
+
+    def zoom_out(self):
+        """Уменьшить масштаб"""
+        browser = self.current_browser()
+        if browser:
+            browser.setZoomFactor(max(0.3, browser.zoomFactor() - 0.1))
+
+    def zoom_reset(self):
+        """Сбросить масштаб"""
+        browser = self.current_browser()
+        if browser:
+            browser.setZoomFactor(1.0)
+
+    def print_page(self):
+        """Печать страницы"""
+        browser = self.current_browser()
+        if browser:
+            browser.page().print()
+
+    def save_page(self):
+        """Сохранить страницу"""
+        browser = self.current_browser()
+        if browser:
+            browser.page().save()
+
+    def find_in_page(self):
+        """Поиск на странице"""
+        browser = self.current_browser()
+        if browser:
+            browser.page().findText("")
+
+    def stop_loading(self):
+        """Остановить загрузку"""
+        browser = self.current_browser()
+        if browser:
+            browser.stop()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            if event.pos().y() <= self.title_bar.height():
+                self.dragging = True
+                self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
+                event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.dragging and event.buttons() == Qt.LeftButton:
+            self.move(event.globalPos() - self.drag_position)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self.dragging = False
+
+    def apply_theme(self):
+        style = self.theme_switcher.get_theme_style(self.current_theme)
+        self.setStyleSheet(style)
+
+    def change_theme(self, theme_name):
+        """Изменение темы (недоступно в инкогнито)"""
+        if self.incognito:
+            QMessageBox.information(self, "Режим инкогнито",
+                                   "В режиме инкогнито доступна только тёмная тема!")
+            return
+        self.current_theme = theme_name
+        self.database.save_setting("theme", theme_name)
+        self.apply_theme()
+
+    def load_bookmarks(self):
+        if not self.incognito:
+            bookmarks = self.database.get_bookmarks()
+            self.favourites.load_bookmarks(bookmarks)
+
+    def add_new_tab(self, qurl=None):
+        self.tabs.add_new_tab(qurl)
+
+    def current_browser(self):
+        return self.tabs.current_browser()
+
+    def update_url_bar(self, qurl, browser=None):
+        if browser == self.current_browser():
+            self.nav_bar.update_url(qurl)
+
+    def navigate_to_url(self):
+        url = self.nav_bar.url_bar.text()
+        self.open_url(url)
+
+    def open_url(self, url):
+        if url:
+            if not url.startswith("http") and not url.startswith("https"):
+                if "." in url and not " " in url:
+                    url = "http://" + url
+                else:
+                    url = "https://ya.ru/search/?text=" + url.replace(" ", "+")
+            self.current_browser().setUrl(QUrl(url))
+
+    def go_home(self):
+        self.current_browser().setUrl(QUrl("https://ya.ru"))
+
+    def add_bookmark(self):
+        if self.incognito:
+            QMessageBox.information(self, "Режим инкогнито",
+                                   "В режиме инкогнито нельзя добавлять закладки!")
+            return
+
+        browser = self.current_browser()
+        if browser:
+            url = browser.url().toString()
+            title = browser.page().title() or "Без названия"
+
+            if self.database.bookmark_exists(url):
+                QMessageBox.information(
+                    self, "Информация",
+                    "Эта страница уже добавлена в закладки!"
+                )
+                return
+
+            new_title, ok = QInputDialog.getText(
+                self, "Добавить закладку",
+                "Введите название для закладки:",
+                text=title
+            )
+
+            if ok and new_title:
+                self.database.add_bookmark(new_title, url)
+                self.load_bookmarks()
+                QMessageBox.information(self, "Успех", "Закладка добавлена!")
+
+    def show_history(self):
+        if self.incognito:
+            QMessageBox.information(self, "Режим инкогнито",
+                                   "В режиме инкогнито история не сохраняется!")
+            return
+
+        dialog = HistoryDialog(self)
+        dialog.exec_()
+
+    def show_all_bookmarks(self):
+        if self.incognito:
+            QMessageBox.information(self, "Режим инкогнито",
+                                   "В режиме инкогнито нет закладок!")
+            return
+
+        dialog = BookmarksDialog(self)
+        dialog.exec_()
+
+    def clear_history(self):
+        if self.incognito:
+            return
+
+        reply = QMessageBox.question(
+            self, "Очистка истории",
+            "Вы уверены, что хотите очистить всю историю?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            self.database.clear_history()
+            QMessageBox.information(self, "Успех", "История очищена!")
+
+    def add_to_history(self, title, url):
+        """Добавляет запись в историю только если не в режиме инкогнито"""
+        if not self.incognito and self.database:
+            self.database.add_to_history(title, url)
+
+    def closeEvent(self, event):
+        # Очищаем ресурсы
+        if hasattr(self, 'tabs'):
+            self.tabs.deleteLater()
+        if not self.incognito and hasattr(self, 'database'):
+            self.database.close()
+        event.accept()
+
+================================================================================
+database.py
+================================================================================
+
+import sqlite3
+
+class Database:
+    def __init__(self):
+        self.conn = sqlite3.connect('browser.db')
+        self.cursor = self.conn.cursor()
+        self.create_tables()
+
+    def create_tables(self):
+        # Создаем таблицу закладок
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bookmarks
+            (id INTEGER PRIMARY KEY, title TEXT, url TEXT)
+        ''')
+
+        # Создаем таблицу истории
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS history
+            (id INTEGER PRIMARY KEY, title TEXT, url TEXT,
+             visit_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+        ''')
+
+        # Создаем таблицу настроек
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS settings
+            (key TEXT PRIMARY KEY, value TEXT)
+        ''')
+        self.conn.commit()
+
+    def get_bookmarks(self, limit=10):
+        self.cursor.execute("SELECT title, url FROM bookmarks ORDER BY title LIMIT ?", (limit,))
+        return self.cursor.fetchall()
+
+    def get_all_bookmarks(self):
+        self.cursor.execute("SELECT title, url FROM bookmarks ORDER BY title")
+        return self.cursor.fetchall()
+
+    def add_bookmark(self, title, url):
+        self.cursor.execute(
+            "INSERT INTO bookmarks (title, url) VALUES (?, ?)",
+            (title, url)
+        )
+        self.conn.commit()
+
+    def delete_bookmark(self, url):
+        self.cursor.execute("DELETE FROM bookmarks WHERE url = ?", (url,))
+        self.conn.commit()
+
+    def bookmark_exists(self, url):
+        self.cursor.execute("SELECT id FROM bookmarks WHERE url = ?", (url,))
+        return self.cursor.fetchone() is not None
+
+    def get_history(self, limit=100):
+        self.cursor.execute(
+            "SELECT title, url, visit_time FROM history ORDER BY visit_time DESC LIMIT ?",
+            (limit,)
+        )
+        return self.cursor.fetchall()
+
+    def add_to_history(self, title, url):
+        """Добавляет запись в историю (проверка на инкогнито должна быть на уровне окна)"""
+        if url and url != "about:blank" and url != "https://ya.ru" and "Загрузка..." not in title:
+            try:
+                self.cursor.execute(
+                    "INSERT INTO history (title, url) VALUES (?, ?)",
+                    (title, url)
+                )
+                self.conn.commit()
+            except Exception as e:
+                print(f"Ошибка при добавлении в историю: {e}")
+
+    def clear_history(self):
+        self.cursor.execute("DELETE FROM history")
+        self.conn.commit()
+
+    def get_setting(self, key, default=None):
+        self.cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        result = self.cursor.fetchone()
+        return result[0] if result else default
+
+    def save_setting(self, key, value):
+        self.cursor.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, value)
+        )
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
+
+================================================================================
+favourites_dialog.py
+================================================================================
+
+from PyQt5.QtWidgets import QDialog, QVBoxLayout, QListWidget, QDialogButtonBox, QMessageBox, QListWidgetItem
+from PyQt5.QtCore import Qt
+
+class BookmarksDialog(QDialog):
+    def __init__(self, browser_window):
+        super().__init__(browser_window)
+        self.browser_window = browser_window
+        self.setWindowTitle("Все закладки")
+        self.setGeometry(200, 200, 500, 400)
+
+        # Применяем тему - используем правильное имя атрибута (theme_switcher)
+        theme = browser_window.current_theme
+        if hasattr(browser_window, 'theme_switcher'):
+            self.setStyleSheet(browser_window.theme_switcher.get_dialog_style(theme))
+
+        self.setup_ui()
+        self.load_bookmarks()
+
+    def setup_ui(self):
+        layout = QVBoxLayout()
+
+        self.bookmarks_list = QListWidget()
+        self.bookmarks_list.itemDoubleClicked.connect(self.open_bookmark)
+        layout.addWidget(self.bookmarks_list)
+
+        # Кнопки
+        button_box = QDialogButtonBox()
+        delete_btn = button_box.addButton("Удалить выбранное", QDialogButtonBox.ActionRole)
+        close_btn = button_box.addButton("Закрыть", QDialogButtonBox.RejectRole)
+
+        delete_btn.clicked.connect(self.delete_selected)
+        close_btn.clicked.connect(self.close)
+
+        layout.addWidget(button_box)
+
+        self.setLayout(layout)
+
+    def load_bookmarks(self):
+        """Загружает все закладки из базы данных"""
+        if hasattr(self.browser_window, 'incognito') and self.browser_window.incognito:
+            return
+        self.bookmarks_list.clear()
+        bookmarks = self.browser_window.database.get_all_bookmarks()
+
+        for title, url in bookmarks:
+            item_text = f"{title}\n{url}"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.UserRole, url)
+            self.bookmarks_list.addItem(item)
+
+    def open_bookmark(self, item):
+        """Открывает закладку в текущей вкладке"""
+        url = item.data(Qt.UserRole)
+        self.browser_window.open_url(url)
+        self.close()
+
+    def delete_selected(self):
+        """Удаляет выбранную закладку"""
+        current_item = self.bookmarks_list.currentItem()
+        if current_item:
+            url = current_item.data(Qt.UserRole)
+            title = current_item.text().split('\n')[0]  # Берем только название
+
+            reply = QMessageBox.question(
+                self, "Удаление закладки",
+                f"Удалить закладку '{title}'?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+
+            if reply == QMessageBox.Yes:
+                # Удаляем из базы данных
+                self.browser_window.database.delete_bookmark(url)
+
+                # Удаляем из списка
+                self.bookmarks_list.takeItem(self.bookmarks_list.row(current_item))
+
+                # Обновляем панель закладок
+                self.browser_window.load_bookmarks()
+
+                QMessageBox.information(self, "Успех", "Закладка удалена!")
+
+================================================================================
+favourites.py
+================================================================================
+
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton
+from PyQt5.QtCore import Qt
+
+class BookmarksBar(QWidget):
+    def __init__(self, browser_window):
+        super().__init__()
+        self.browser_window = browser_window
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(8)
+
+        # Динамический стиль в зависимости от режима
+        if hasattr(self.browser_window, 'incognito') and self.browser_window.incognito:
+            # Стиль для инкогнито (тёмный)
+            self.setStyleSheet("""
+        BookmarksBar {
+            background-color: #2d2d2d;
+            border-top: 1px solid #555555;
+            border-bottom: 1px solid #555555;
+        }
+
+        QLabel {
+            color: #aaaaaa;
+            font-size: 13px;
+            font-weight: 500;
+            padding: 6px 12px 6px 8px;
+            background: transparent;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        QPushButton {
+            background: transparent;
+            color: #ffffff;
+            border: none;
+            border-radius: 6px;
+            padding: 6px 14px 6px 10px;
+            font-size: 13px;
+            font-weight: 400;
+            text-align: left;
+            min-width: 40px;
+            max-width: 200px;
+        }
+
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+            color: #ffffff;
+        }
+
+        QPushButton:pressed {
+            background-color: rgba(255, 255, 255, 0.15);
+        }
+
+        QPushButton:focus {
+            outline: 2px solid rgba(255, 255, 255, 0.3);
+            outline-offset: -2px;
+        }
+
+        QPushButton#showAllBtn {
+            background: transparent;
+            color: #66aaff;
+            border: 1px solid #555555;
+            border-radius: 16px;
+            padding: 6px 18px 6px 14px;
+            font-size: 12px;
+            font-weight: 500;
+            min-width: 100px;
+            text-align: center;
+        }
+
+        QPushButton#showAllBtn:hover {
+            background-color: rgba(102, 170, 255, 0.1);
+            border-color: #66aaff;
+        }
+
+        QPushButton#showAllBtn:pressed {
+            background-color: rgba(102, 170, 255, 0.2);
+        }
+
+        QToolTip {
+            background-color: #2c2c2e;
+            color: #ffffff;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 11px;
+        }
+        """)
+        else:
+            # Обычный стиль
+            self.setStyleSheet("""
+        BookmarksBar {
+            background-color: #fafafc;
+            border-top: 1px solid #e5e5e7;
+            border-bottom: 1px solid #e5e5e7;
+        }
+
+        QLabel {
+            color: #5c5c5e;
+            font-size: 13px;
+            font-weight: 500;
+            padding: 6px 12px 6px 8px;
+            background: transparent;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        QPushButton {
+            background: transparent;
+            color: #2c2c2e;
+            border: none;
+            border-radius: 6px;
+            padding: 6px 14px 6px 10px;
+            font-size: 13px;
+            font-weight: 400;
+            text-align: left;
+            min-width: 40px;
+            max-width: 200px;
+        }
+
+        QPushButton:hover {
+            background-color: rgba(0, 0, 0, 0.04);
+            color: #000000;
+        }
+
+        QPushButton:pressed {
+            background-color: rgba(0, 0, 0, 0.08);
+        }
+
+        QPushButton:focus {
+            outline: 2px solid rgba(0, 122, 255, 0.3);
+            outline-offset: -2px;
+        }
+
+        QPushButton#showAllBtn {
+            background: transparent;
+            color: #0066cc;
+            border: 1px solid #d9d9de;
+            border-radius: 16px;
+            padding: 6px 18px 6px 14px;
+            font-size: 12px;
+            font-weight: 500;
+            min-width: 100px;
+            text-align: center;
+        }
+
+        QPushButton#showAllBtn:hover {
+            background-color: rgba(0, 102, 204, 0.04);
+            border-color: #0066cc;
+        }
+
+        QPushButton#showAllBtn:pressed {
+            background-color: rgba(0, 102, 204, 0.08);
+        }
+
+        QToolTip {
+            background-color: #2c2c2e;
+            color: #ffffff;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 11px;
+        }
+        """)
+
+        # Используем QLabel с текстом вместо SVG для иконки закладок
+        self.bookmarks_label = QLabel("📑 ЗАКЛАДКИ")
+        layout.addWidget(self.bookmarks_label)
+
+        self.bookmarks_container = QWidget()
+        self.bookmarks_buttons_layout = QHBoxLayout(self.bookmarks_container)
+        self.bookmarks_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        self.bookmarks_buttons_layout.setSpacing(2)
+        layout.addWidget(self.bookmarks_container)
+
+        layout.addStretch()
+
+        # Кнопка "Все закладки" с текстовой иконкой
+        self.show_all_btn = QPushButton("📁 Все закладки")
+        self.show_all_btn.setObjectName("showAllBtn")
+
+        # В инкогнито кнопка закладок отключена
+        if hasattr(self.browser_window, 'incognito') and self.browser_window.incognito:
+            self.show_all_btn.setEnabled(False)
+            self.show_all_btn.setToolTip("В режиме инкогнито закладки недоступны")
+        else:
+            self.show_all_btn.clicked.connect(self.browser_window.show_all_bookmarks)
+
+        layout.addWidget(self.show_all_btn)
+
+    def load_bookmarks(self, bookmarks):
+        # В инкогнито не показываем закладки
+        if hasattr(self.browser_window, 'incognito') and self.browser_window.incognito:
+            for i in reversed(range(self.bookmarks_buttons_layout.count())):
+                widget = self.bookmarks_buttons_layout.itemAt(i).widget()
+                if widget:
+                    widget.deleteLater()
+
+            empty_label = QLabel("В инкогнито закладки недоступны")
+            empty_label.setStyleSheet("color: #888888; padding: 6px 10px; font-style: italic;")
+            self.bookmarks_buttons_layout.addWidget(empty_label)
+            return
+
+        for i in reversed(range(self.bookmarks_buttons_layout.count())):
+            widget = self.bookmarks_buttons_layout.itemAt(i).widget()
+            if widget:
+                widget.deleteLater()
+
+        for title, url in bookmarks:
+            short_title = title[:15] + "…" if len(title) > 15 else title
+            btn = QPushButton(f"🔖 {short_title}")
+            btn.setToolTip(f"{title}\n{url}")
+            btn.setFixedHeight(28)
+            btn.clicked.connect(lambda checked, u=url: self.browser_window.open_url(u))
+            self.bookmarks_buttons_layout.addWidget(btn)
+
+        if not bookmarks:
+            empty_label = QLabel("Нет закладок")
+            empty_label.setStyleSheet("color: #8e8e93; padding: 6px 10px; font-style: italic;")
+            self.bookmarks_buttons_layout.addWidget(empty_label)
+
+================================================================================
+history_dialog.py
+================================================================================
+
+from PyQt5.QtWidgets import QDialog, QVBoxLayout, QListWidget, QDialogButtonBox, QMessageBox, QListWidgetItem
+from PyQt5.QtCore import Qt
+
+class HistoryDialog(QDialog):
+    def __init__(self, browser_window):
+        super().__init__(browser_window)
+        self.browser_window = browser_window
+        self.setWindowTitle("История")
+        self.setGeometry(200, 200, 600, 400)
+
+        # Применяем тему
+        theme = browser_window.current_theme
+        self.setStyleSheet(browser_window.theme_switcher.get_dialog_style(theme))
+
+        self.setup_ui()
+        self.load_history()
+
+    def setup_ui(self):
+        layout = QVBoxLayout()
+
+        self.history_list = QListWidget()
+        self.history_list.itemDoubleClicked.connect(self.open_history_item)
+        layout.addWidget(self.history_list)
+
+        # Кнопки
+        button_box = QDialogButtonBox()
+        clear_btn = button_box.addButton("Очистить историю", QDialogButtonBox.ActionRole)
+        close_btn = button_box.addButton("Закрыть", QDialogButtonBox.RejectRole)
+
+        clear_btn.clicked.connect(self.clear_history)
+        close_btn.clicked.connect(self.close)
+
+        layout.addWidget(button_box)
+
+        self.setLayout(layout)
+
+    def load_history(self):
+        """Загружает все закладки из базы данных"""
+        if hasattr(self.browser_window, 'incognito') and self.browser_window.incognito:
+            return
+        history_items = self.browser_window.database.get_history()
+
+        for title, url, time in history_items:
+            item_text = f"{title}\n{url} ({time})"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.UserRole, url)
+            self.history_list.addItem(item)
+
+    def open_history_item(self, item):
+        url = item.data(Qt.UserRole)
+        self.browser_window.open_url(url)
+        self.close()
+
+    def clear_history(self):
+        reply = QMessageBox.question(
+            self, "Очистка истории",
+            "Вы уверены, что хотите очистить всю историю?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            self.browser_window.database.clear_history()
+            self.history_list.clear()
+            QMessageBox.information(self, "Успех", "История очищена!")
+
+================================================================================
+navbar.py
+================================================================================
+
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QPushButton, QLineEdit, QMenu
+from PyQt5.QtCore import QPoint, Qt
+
+class NavigationBar(QWidget):
+    def __init__(self, browser_window):
+        super().__init__()
+        self.browser_window = browser_window
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(4)
+
+        # Основной стиль для панели
+        self.setStyleSheet("""
+    NavigationBar {
+        background-color: #f5f5f7;
+        border-bottom: 1px solid #d9d9d9;
+    }
+
+    QPushButton {
+        background-color: transparent;
+        border: none;
+        border-radius: 6px;
+        min-width: 36px;
+        max-width: 36px;
+        min-height: 36px;
+        max-height: 36px;
+        margin: 0px 2px;
+        font-size: 18px;
+        color: #666666;
+    }
+
+    QPushButton:hover {
+        background-color: rgba(0, 0, 0, 0.06);
+    }
+
+    QPushButton:pressed {
+        background-color: rgba(0, 0, 0, 0.1);
+    }
+
+    QPushButton:disabled {
+        opacity: 0.4;
+    }
+
+    QLineEdit {
+        border: 1px solid #d9d9d9;
+        border-radius: 18px;
+        padding: 8px 16px;
+        font-size: 14px;
+        min-height: 22px;
+        background-color: #ffffff;
+        selection-background-color: #4a90e2;
+    }
+
+    QLineEdit:hover {
+        border-color: #b3b3b3;
+        background-color: #ffffff;
+    }
+
+    QLineEdit:focus {
+        border-color: #0066cc;
+        background-color: #ffffff;
+        outline: none;
+    }
+
+    QLineEdit::placeholder {
+        color: #8e8e93;
+        font-style: italic;
+    }
+
+    QMenu {
+        background-color: #ffffff;
+        border: 0.5px solid #d9d9d9;
+        border-radius: 8px;
+        padding: 6px;
+        font-size: 13px;
+    }
+
+    QMenu::item {
+        padding: 8px 28px 8px 28px;
+        border-radius: 5px;
+        color: #1d1d1f;
+    }
+
+    QMenu::item:selected {
+        background-color: #0066cc;
+        color: #ffffff;
+    }
+
+    QMenu::item:disabled {
+        color: #8e8e93;
+    }
+
+    QMenu::separator {
+        height: 0.5px;
+        background-color: #d9d9d9;
+        margin: 6px 10px;
+    }
+
+    QToolTip {
+        background-color: #2c2c2e;
+        color: #ffffff;
+        border: none;
+        border-radius: 5px;
+        padding: 6px 10px;
+        font-size: 11px;
+    }
+""")
+
+        # Кнопки навигации с текстовыми иконками и подсказками
+        self.back_btn = QPushButton("←")
+        self.back_btn.setToolTip("Назад (Alt+←)")
+        self.back_btn.clicked.connect(lambda: self.browser_window.current_browser().back())
+        layout.addWidget(self.back_btn)
+
+        self.forward_btn = QPushButton("→")
+        self.forward_btn.setToolTip("Вперед (Alt+→)")
+        self.forward_btn.clicked.connect(lambda: self.browser_window.current_browser().forward())
+        layout.addWidget(self.forward_btn)
+
+        self.reload_btn = QPushButton("↻")
+        self.reload_btn.setToolTip("Обновить (Ctrl+R)")
+        self.reload_btn.clicked.connect(lambda: self.browser_window.current_browser().reload())
+        layout.addWidget(self.reload_btn)
+
+        # Адресная строка
+        self.url_bar = QLineEdit()
+        self.url_bar.setPlaceholderText("Введите адрес или поисковый запрос... (Ctrl+L для фокуса)")
+        self.url_bar.returnPressed.connect(self.navigate_to_url)
+        layout.addWidget(self.url_bar, 1)
+
+        # Кнопка добавления закладки
+        self.bookmark_btn = QPushButton("★")
+        self.bookmark_btn.setToolTip("Добавить в закладки (Ctrl+D)")
+        self.bookmark_btn.clicked.connect(self.browser_window.add_bookmark)
+        layout.addWidget(self.bookmark_btn)
+
+        # Кнопка новой вкладки
+        self.new_tab_btn = QPushButton("+")
+        self.new_tab_btn.setToolTip("Новая вкладка (Ctrl+T)")
+        self.new_tab_btn.clicked.connect(self.browser_window.add_new_tab)
+        layout.addWidget(self.new_tab_btn)
+
+        # Кнопка меню
+        self.menu_btn = QPushButton("⋮")
+        self.menu_btn.setToolTip("Меню")
+        self.menu_btn.clicked.connect(self.show_menu)
+        layout.addWidget(self.menu_btn)
+
+    def navigate_to_url(self):
+        url = self.url_bar.text()
+        self.browser_window.open_url(url)
+
+    def update_url(self, url):
+        url_str = url.toString()
+        self.url_bar.setText(url_str)
+        self.url_bar.setCursorPosition(0)
+
+    def show_menu(self):
+        menu = QMenu(self)
+
+        # Новое окно
+        new_window_action = menu.addAction("🪟 Новое окно\tCtrl+N")
+        new_window_action.triggered.connect(self.open_new_window)
+
+        # Новое окно инкогнито
+        incognito_action = menu.addAction("🕶️ Новое окно инкогнито\tCtrl+Shift+N")
+        incognito_action.triggered.connect(self.open_incognito_window)
+
+        menu.addSeparator()
+
+        # Подменю тем - показываем только в обычном режиме
+        if not self.browser_window.incognito:
+            theme_menu = menu.addMenu("🎨 Тема оформления")
+
+            for theme_name in self.browser_window.theme_switcher.get_theme_names():
+                theme_info = self.browser_window.theme_switcher.THEMES[theme_name]
+                action = theme_menu.addAction(theme_info["name"])
+                action.triggered.connect(lambda checked, t=theme_name: self.browser_window.change_theme(t))
+        else:
+            # В инкогнито показываем информационный пункт
+            dark_theme_info = menu.addAction("🌙 Тёмная тема (фиксировано для инкогнито)")
+            dark_theme_info.setEnabled(False)
+
+        menu.addSeparator()
+
+        # Закладки - показываем только в обычном режиме
+        if not self.browser_window.incognito:
+            bookmarks_action = menu.addAction("📑 Все закладки\tCtrl+Shift+B")
+            bookmarks_action.triggered.connect(self.browser_window.show_all_bookmarks)
+
+        # История - показываем только в обычном режиме
+        if not self.browser_window.incognito:
+            history_action = menu.addAction("📋 История\tCtrl+H")
+            history_action.triggered.connect(self.browser_window.show_history)
+
+            clear_history_action = menu.addAction("🗑 Очистить историю\tCtrl+Shift+Del")
+            clear_history_action.triggered.connect(self.browser_window.clear_history)
+        else:
+            incognito_info = menu.addAction("🕶️ Режим инкогнито (история не сохраняется)")
+            incognito_info.setEnabled(False)
+
+        menu.addSeparator()
+
+        # Масштабирование (доступно везде)
+        zoom_in_action = menu.addAction("🔍 Увеличить\tCtrl+=")
+        zoom_in_action.triggered.connect(self.browser_window.zoom_in)
+
+        zoom_out_action = menu.addAction("🔍 Уменьшить\tCtrl+-")
+        zoom_out_action.triggered.connect(self.browser_window.zoom_out)
+
+        zoom_reset_action = menu.addAction("🔍 Сбросить масштаб\tCtrl+0")
+        zoom_reset_action.triggered.connect(self.browser_window.zoom_reset)
+
+        menu.addSeparator()
+
+        # Полноэкранный режим (доступен везде)
+        fullscreen_action = menu.addAction("🖥️ Полноэкранный режим\tF11")
+        fullscreen_action.triggered.connect(self.browser_window.toggle_fullscreen)
+
+        menu.addSeparator()
+
+        # Показываем меню под кнопкой
+        menu.exec_(self.menu_btn.mapToGlobal(QPoint(0, self.menu_btn.height())))
+
+    def open_new_window(self):
+        """Открывает новое окно браузера"""
+        from browser_window import AdvancedBrowser
+        self.new_window = AdvancedBrowser(incognito=False)
+        self.new_window.show()
+
+    def open_incognito_window(self):
+        """Открывает новое окно в режиме инкогнито"""
+        from browser_window import AdvancedBrowser
+        self.incognito_window = AdvancedBrowser(incognito=True)
+        self.incognito_window.show()
+
+================================================================================
+tab_widget.py
+================================================================================
+
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTabBar, QStackedWidget, QPushButton, QHBoxLayout
+from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile, QWebEnginePage
+from PyQt5.QtCore import QUrl, Qt
+
+class TabWidget(QWidget):
+    def __init__(self, browser_window, incognito=False):
+        super().__init__()
+        self.browser_window = browser_window
+        self.incognito = incognito
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Создаем горизонтальный контейнер для панели вкладок и кнопки
+        tab_container = QWidget()
+        tab_layout = QHBoxLayout(tab_container)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(0)
+
+        # Создаем панель вкладок
+        self.tab_bar = QTabBar()
+        self.tab_bar.setTabsClosable(True)
+        self.tab_bar.setMovable(True)
+        self.tab_bar.setExpanding(False)
+        self.tab_bar.setDrawBase(False)
+        self.tab_bar.tabCloseRequested.connect(self.close_tab)
+        self.tab_bar.currentChanged.connect(self.tab_changed)
+
+        # Кнопка новой вкладки
+        self.new_tab_btn = QPushButton()
+        self.new_tab_btn.setFixedSize(28, 28)
+        self.new_tab_btn.setCursor(Qt.PointingHandCursor)
+        self.new_tab_btn.clicked.connect(lambda: self.add_new_tab())
+        self.new_tab_btn.setToolTip("Новая вкладка (Ctrl+T)")
+        self.new_tab_btn.setText("+")
+
+        # Кнопка нового окна инкогнито
+        self.incognito_btn = QPushButton()
+        self.incognito_btn.setFixedSize(28, 28)
+        self.incognito_btn.setCursor(Qt.PointingHandCursor)
+        self.incognito_btn.clicked.connect(self.open_incognito_window)
+        self.incognito_btn.setToolTip("Новое окно инкогнито (Ctrl+Shift+N)")
+        self.incognito_btn.setText("🕶️")
+
+        # Добавляем вкладки и кнопки в контейнер
+        tab_layout.addWidget(self.tab_bar)
+        tab_layout.addWidget(self.new_tab_btn)
+        tab_layout.addWidget(self.incognito_btn)
+        tab_layout.addStretch()
+
+        # Создаем стек для содержимого вкладок
+        self.stack = QStackedWidget()
+
+        layout.addWidget(tab_container)
+        layout.addWidget(self.stack)
+
+        self.browsers = []
+        self.profiles = []  # Сохраняем ссылки на профили для предотвращения удаления
+
+        # Устанавливаем стиль
+        self.setup_style()
+
+    def open_incognito_window(self):
+        """Открывает новое окно в режиме инкогнито"""
+        from browser_window import AdvancedBrowser
+        self.incognito_window = AdvancedBrowser(incognito=True)
+        self.incognito_window.show()
+
+    def add_new_tab(self, qurl=None):
+        """Добавляет новую вкладку"""
+        try:
+            if qurl is None:
+                qurl = QUrl("https://ya.ru")
+            elif isinstance(qurl, str):
+                qurl = QUrl(qurl)
+
+            # Создаем браузер с соответствующим профилем
+            if self.incognito:
+                # Для инкогнито создаем временный профиль с уникальным именем
+                profile = QWebEngineProfile()  # Временный профиль
+                self.profiles.append(profile)  # Сохраняем ссылку
+                browser = QWebEngineView()
+                page = QWebEnginePage(profile, browser)
+                browser.setPage(page)
+            else:
+                browser = QWebEngineView()
+                # Используем стандартный профиль
+
+            browser.setUrl(qurl)
+
+            # Настраиваем профиль для инкогнито - отключаем сохранение данных
+            if self.incognito:
+                profile = browser.page().profile()
+                profile.setHttpCacheType(QWebEngineProfile.NoCache)
+                profile.setPersistentCookiesPolicy(QWebEngineProfile.NoPersistentCookies)
+                profile.setPersistentStoragePath("")  # Отключаем постоянное хранилище
+
+            self.stack.addWidget(browser)
+            self.browsers.append(browser)
+
+            # Добавляем индикатор инкогнито в заголовок вкладки
+            tab_text = "● Загрузка..."
+            if self.incognito:
+                tab_text = "🕶️ " + tab_text
+
+            index = self.tab_bar.addTab(tab_text)
+            self.tab_bar.setTabData(index, {"loading": True, "url": qurl.toString(), "browser": browser})
+            self.tab_bar.setCurrentIndex(index)
+            self.stack.setCurrentIndex(index)
+
+            browser.urlChanged.connect(
+                lambda url, b=browser: self.browser_window.update_url_bar(url, b)
+            )
+            browser.loadFinished.connect(
+                lambda ok, b=browser: self.update_title(b)
+            )
+            browser.loadStarted.connect(
+                lambda: self.set_tab_loading(index, True)
+            )
+
+            # Добавляем в историю только если не в режиме инкогнито
+            if not self.incognito:
+                self.browser_window.add_to_history("Загрузка...", qurl.toString())
+
+            print(f"Добавлена новая вкладка{' (инкогнито)' if self.incognito else ''}. Всего вкладок: {self.count()}")
+
+        except Exception as e:
+            print(f"Ошибка при создании вкладки: {e}")
+
+    def set_tab_loading(self, index, loading):
+        if 0 <= index < self.tab_bar.count():
+            data = self.tab_bar.tabData(index) or {}
+            data['loading'] = loading
+            self.tab_bar.setTabData(index, data)
+
+    def current_browser(self):
+        current_index = self.stack.currentIndex()
+        if current_index >= 0 and current_index < len(self.browsers):
+            return self.browsers[current_index]
+        return None
+
+    def count(self):
+        return len(self.browsers)
+
+    def tab_changed(self, index):
+        if index >= 0 and index < len(self.browsers):
+            self.stack.setCurrentIndex(index)
+            browser = self.browsers[index]
+            if browser:
+                self.browser_window.update_url_bar(browser.url(), browser)
+
+    def update_title(self, browser):
+        """Обновляет заголовок вкладки"""
+        try:
+            if browser in self.browsers:
+                index = self.browsers.index(browser)
+                title = browser.page().title()
+                if title:
+                    short_title = title[:20] + "…" if len(title) > 20 else title
+
+                    # Добавляем индикатор инкогнито
+                    if self.incognito:
+                        short_title = "🕶️ " + short_title
+
+                    self.tab_bar.setTabText(index, f" {short_title}")
+                    self.set_tab_loading(index, False)
+
+                    if browser == self.current_browser():
+                        self.browser_window.title_bar.update_title(short_title)
+
+                    # Добавляем в историю только если не в режиме инкогнито
+                    if not self.incognito:
+                        self.browser_window.add_to_history(title, browser.url().toString())
+        except Exception as e:
+            print(f"Ошибка при обновлении заголовка: {e}")
+
+    def close_tab(self, index):
+        if len(self.browsers) > 1:
+            browser = self.browsers[index]
+
+            # Получаем профиль до удаления
+            if self.incognito:
+                try:
+                    profile = browser.page().profile()
+                    # Удаляем страницу перед удалением браузера
+                    page = browser.page()
+                    browser.setPage(None)  # Отвязываем страницу
+                    page.deleteLater()
+                except:
+                    pass
+
+            self.stack.removeWidget(browser)
+            browser.deleteLater()
+            self.browsers.pop(index)
+            self.tab_bar.removeTab(index)
+
+            # Очищаем неиспользуемые профили
+            if self.incognito:
+                # Оставляем только профили для существующих браузеров
+                self.profiles = [p for p in self.profiles if any(
+                    hasattr(b.page(), 'profile') and b.page().profile() == p
+                    for b in self.browsers
+                )]
+        else:
+            self.browser_window.close()
+
+    def indexOf(self, browser):
+        if browser in self.browsers:
+            return self.browsers.index(browser)
+        return -1
+
+    def setup_style(self):
+        if self.incognito:
+            # Тёмный стиль для инкогнито
+            self.setStyleSheet("""
+        QTabBar::tab {
+            background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                       stop: 0 #3d3d3d, stop: 1 #2d2d2d);
+            border: 1px solid #555555;
+            border-bottom: none;
+            border-top-left-radius: 6px;
+            border-top-right-radius: 6px;
+            min-width: 140px;
+            max-width: 200px;
+            height: 28px;
+            padding: 0px 20px 0px 10px;
+            margin-right: 2px;
+            margin-top: 2px;
+            color: #ffffff;
+            font-size: 12px;
+            font-weight: 400;
+        }
+
+        QTabBar::tab:selected {
+            background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                       stop: 0 #4d4d4d, stop: 1 #3d3d3d);
+            border-bottom: 1px solid #4d4d4d;
+            margin-bottom: -1px;
+            color: #ffffff;
+            font-weight: 500;
+        }
+
+        QTabBar::tab:hover:!selected {
+            background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                       stop: 0 #4d4d4d, stop: 1 #3d3d3d);
+        }
+
+        QTabBar::tab:first {
+            margin-left: 5px;
+        }
+
+        QTabBar::close-button {
+            width: 0px;
+        }
+
+        QTabBar {
+            qproperty-drawBase: 0;
+            background-color: transparent;
+            min-height: 32px;
+            max-height: 32px;
+        }
+
+        QPushButton {
+            background-color: transparent;
+            border: none;
+            border-radius: 6px;
+            margin-top: 2px;
+            font-size: 16px;
+            color: #ffffff;
+        }
+
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+
+        QPushButton:pressed {
+            background-color: rgba(255, 255, 255, 0.15);
+        }
+
+        QStackedWidget {
+            background-color: #2d2d2d;
+            border: none;
+        }
+
+        QWebEngineView {
+            background-color: #2d2d2d;
+        }
+
+        QToolTip {
+            background-color: #2c2c2e;
+            color: #ffffff;
+            border: none;
+            border-radius: 5px;
+            padding: 6px 10px;
+            font-size: 11px;
+        }
+        """)
+        else:
+            # Обычный светлый стиль
+            self.setStyleSheet("""
+        QTabBar::tab {
+            background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                       stop: 0 #f9f9f9, stop: 1 #f2f2f2);
+            border: 1px solid #d9d9d9;
+            border-bottom: none;
+            border-top-left-radius: 6px;
+            border-top-right-radius: 6px;
+            min-width: 140px;
+            max-width: 200px;
+            height: 28px;
+            padding: 0px 20px 0px 10px;
+            margin-right: 2px;
+            margin-top: 2px;
+            color: #333333;
+            font-size: 12px;
+            font-weight: 400;
+        }
+
+        QTabBar::tab:selected {
+            background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                       stop: 0 #ffffff, stop: 1 #f9f9f9);
+            border-bottom: 1px solid #ffffff;
+            margin-bottom: -1px;
+            color: #000000;
+            font-weight: 500;
+        }
+
+        QTabBar::tab:hover:!selected {
+            background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                       stop: 0 #f0f0f0, stop: 1 #e8e8e8);
+        }
+
+        QTabBar::tab:first {
+            margin-left: 5px;
+        }
+
+        QTabBar::close-button {
+            width: 0px;
+        }
+
+        QTabBar {
+            qproperty-drawBase: 0;
+            background-color: transparent;
+            min-height: 32px;
+            max-height: 32px;
+        }
+
+        QPushButton {
+            background-color: transparent;
+            border: none;
+            border-radius: 6px;
+            margin-top: 2px;
+            font-size: 16px;
+            color: #666666;
+        }
+
+        QPushButton:hover {
+            background-color: rgba(0, 0, 0, 0.06);
+        }
+
+        QPushButton:pressed {
+            background-color: rgba(0, 0, 0, 0.1);
+        }
+
+        QStackedWidget {
+            background-color: #ffffff;
+            border: none;
+        }
+
+        QWebEngineView {
+            background-color: #ffffff;
+        }
+
+        QToolTip {
+            background-color: #2c2c2e;
+            color: #ffffff;
+            border: none;
+            border-radius: 5px;
+            padding: 6px 10px;
+            font-size: 11px;
+        }
+        """)
+
+================================================================================
+theme_switcher.py
+================================================================================
+
+from PyQt5.QtWidgets import QWidget
+from PyQt5.QtCore import Qt
+
+class ThemeManager:
+    THEMES = {
+        "light": {
+            "name": "☀️ Светлая",
+            "bg": "#f0f0f0",
+            "fg": "#000000",
+            "button": "#e0e0e0",
+            "button_hover": "#d0d0d0",
+            "button_pressed": "#c0c0c0",
+            "border": "#b0b0b0",
+            "input_bg": "#ffffff",
+            "tab_selected": "#ffffff",
+            "menu_bg": "#f0f0f0"
+        },
+        "dark": {
+            "name": "🌙 Темная",
+            "bg": "#2d2d2d",
+            "fg": "#ffffff",
+            "button": "#3d3d3d",
+            "button_hover": "#4d4d4d",
+            "button_pressed": "#5d5d5d",
+            "border": "#555555",
+            "input_bg": "#3d3d3d",
+            "tab_selected": "#2d2d2d",
+            "menu_bg": "#3d3d3d"
+        },
+        "blue": {
+            "name": "💙 Синяя",
+            "bg": "#e6f0ff",
+            "fg": "#003366",
+            "button": "#cce0ff",
+            "button_hover": "#b8d4ff",
+            "button_pressed": "#99bbff",
+            "border": "#99bbff",
+            "input_bg": "#ffffff",
+            "tab_selected": "#ffffff",
+            "menu_bg": "#e6f0ff"
+        },
+        "green": {
+            "name": "💚 Зеленая",
+            "bg": "#e8f5e8",
+            "fg": "#006633",
+            "button": "#c8e6c8",
+            "button_hover": "#b8dbb8",
+            "button_pressed": "#99cc99",
+            "border": "#99cc99",
+            "input_bg": "#ffffff",
+            "tab_selected": "#ffffff",
+            "menu_bg": "#e8f5e8"
+        },
+        "purple": {
+            "name": "💜 Фиолетовая",
+            "bg": "#f3e8ff",
+            "fg": "#660066",
+            "button": "#e6ccff",
+            "button_hover": "#d9b3ff",
+            "button_pressed": "#cc99ff",
+            "border": "#cc99ff",
+            "input_bg": "#ffffff",
+            "tab_selected": "#ffffff",
+            "menu_bg": "#f3e8ff"
+        }
+    }
+
+    @classmethod
+    def get_theme_names(cls):
+        return list(cls.THEMES.keys())
+
+    @classmethod
+    def get_theme_style(cls, theme_name):
+        theme = cls.THEMES.get(theme_name, cls.THEMES["light"])
+
+        # Красивый современный шрифт
+        font_family = "Segoe UI, 'Microsoft YaHei', sans-serif"
+
+        return f"""
+            QMainWindow {{
+                background-color: {theme['bg']};
+            }}
+            QWidget {{
+                background-color: {theme['bg']};
+                color: {theme['fg']};
+                font-family: {font_family};
+                font-size: 13px;
+            }}
+            QPushButton {{
+                background-color: {theme['button']};
+                border: 1px solid {theme['border']};
+                border-radius: 3px;
+                padding: 3px;
+                color: {theme['fg']};
+            }}
+            QPushButton:hover {{
+                background-color: {theme['button_hover']};
+            }}
+            QPushButton:pressed {{
+                background-color: {theme['button_pressed']};
+            }}
+            QLineEdit {{
+                background-color: {theme['input_bg']};
+                border: 1px solid {theme['border']};
+                border-radius: 3px;
+                padding: 3px;
+                color: {theme['fg']};
+            }}
+            QTabWidget::pane {{
+                border: 1px solid {theme['border']};
+                background-color: {theme['input_bg']};
+            }}
+            QTabBar::tab {{
+                background-color: {theme['button']};
+                border: 1px solid {theme['border']};
+                padding: 5px;
+                color: {theme['fg']};
+            }}
+            QTabBar::tab:selected {{
+                background-color: {theme['tab_selected']};
+            }}
+            QTabBar::tab:hover {{
+                background-color: {theme['button_hover']};
+            }}
+            QMenu {{
+                background-color: {theme['menu_bg']};
+                color: {theme['fg']};
+                border: 1px solid {theme['border']};
+            }}
+            QMenu::item:selected {{
+                background-color: {theme['button_hover']};
+            }}
+            QLabel {{
+                color: {theme['fg']};
+            }}
+            QDialog {{
+                background-color: {theme['bg']};
+            }}
+        """
+
+    @classmethod
+    def get_dialog_style(cls, theme_name):
+        theme = cls.THEMES.get(theme_name, cls.THEMES["light"])
+        return f"background-color: {theme['bg']}; color: {theme['fg']};"
+
+================================================================================
+title_bar.py
+================================================================================
+
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton
+from PyQt5.QtCore import Qt, QByteArray
+from PyQt5.QtGui import QIcon, QPixmap, QPainter
+from PyQt5.QtSvg import QSvgRenderer
+
+class TitleBar(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.setFixedHeight(44)
+        self.dragging = False
+        self.drag_position = None
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 0, 16, 0)
+        layout.setSpacing(8)
+
+        # Динамический стиль в зависимости от режима
+        if hasattr(self.parent, 'incognito') and self.parent.incognito:
+            # Стиль для инкогнито (тёмный)
+            self.setStyleSheet("""
+        TitleBar {
+            background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                                       stop: 0 #2d2d2d, stop: 1 #3d3d3d);
+            border-bottom: 1px solid #555555;
+        }
+
+        QLabel {
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 500;
+            padding: 0px 8px;
+            background: transparent;
+            letter-spacing: 0.3px;
+        }
+
+        QPushButton {
+            background-color: transparent;
+            border: none;
+            border-radius: 6px;
+            min-width: 32px;
+            max-width: 32px;
+            min-height: 32px;
+            max-height: 32px;
+            margin: 0px 2px;
+        }
+
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+
+        QPushButton:pressed {
+            background-color: rgba(255, 255, 255, 0.15);
+        }
+
+        QPushButton#closeBtn {
+            margin-left: 4px;
+        }
+
+        QPushButton#closeBtn:hover {
+            background-color: #ff4444;
+        }
+
+        QPushButton#closeBtn:pressed {
+            background-color: #cc0000;
+        }
+
+        QToolTip {
+            background-color: #2c2c2e;
+            color: #ffffff;
+            border: none;
+            border-radius: 5px;
+            padding: 6px 10px;
+            font-size: 11px;
+        }
+        """)
+        else:
+            # Обычный стиль
+            self.setStyleSheet("""
+        TitleBar {
+            background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                                       stop: 0 #f5f5f7, stop: 1 #ffffff);
+            border-bottom: 1px solid #d9d9d9;
+        }
+
+        QLabel {
+            color: #1d1d1f;
+            font-size: 14px;
+            font-weight: 500;
+            padding: 0px 8px;
+            background: transparent;
+            letter-spacing: 0.3px;
+        }
+
+        QPushButton {
+            background-color: transparent;
+            border: none;
+            border-radius: 6px;
+            min-width: 32px;
+            max-width: 32px;
+            min-height: 32px;
+            max-height: 32px;
+            margin: 0px 2px;
+        }
+
+        QPushButton:hover {
+            background-color: rgba(0, 0, 0, 0.06);
+        }
+
+        QPushButton:pressed {
+            background-color: rgba(0, 0, 0, 0.1);
+        }
+
+        QPushButton#closeBtn {
+            margin-left: 4px;
+        }
+
+        QPushButton#closeBtn:hover {
+            background-color: #ff4444;
+        }
+
+        QPushButton#closeBtn:pressed {
+            background-color: #cc0000;
+        }
+
+        QToolTip {
+            background-color: #2c2c2e;
+            color: #ffffff;
+            border: none;
+            border-radius: 5px;
+            padding: 6px 10px;
+            font-size: 11px;
+        }
+        """)
+
+        # Создаем SVG иконки с учётом режима
+        is_incognito = hasattr(self.parent, 'incognito') and self.parent.incognito
+        stroke_color = "#ffffff" if is_incognito else "#666666"
+
+        minimize_icon = self.create_icon_from_svg(self.get_minimize_svg(stroke_color), 16, 16)
+        maximize_icon = self.create_icon_from_svg(self.get_maximize_svg(stroke_color), 16, 16)
+        close_icon = self.create_icon_from_svg(self.get_close_svg(stroke_color), 16, 16)
+
+        # Заголовок окна
+        self.title_label = QLabel("POVTIAS CO. INC. BROWSER")
+        if is_incognito:
+            self.title_label.setStyleSheet("""
+                QLabel {
+                    font-weight: 600;
+                    color: #ffffff;
+                    font-size: 14px;
+                }
+            """)
+        else:
+            self.title_label.setStyleSheet("""
+                QLabel {
+                    font-weight: 600;
+                    color: #1d1d1f;
+                    font-size: 14px;
+                }
+            """)
+        layout.addWidget(self.title_label)
+
+        # Добавляем иконку инкогнито для тёмной темы
+        if is_incognito:
+            incognito_indicator = QLabel("🕶️")
+            incognito_indicator.setStyleSheet("color: #888888; font-size: 16px;")
+            layout.addWidget(incognito_indicator)
+
+        # Растягивающийся пробел
+        layout.addStretch()
+
+        # Кнопки управления окном
+        self.minimize_btn = QPushButton()
+        self.minimize_btn.setObjectName("minimizeBtn")
+        self.minimize_btn.setIcon(minimize_icon)
+        self.minimize_btn.setIconSize(self.minimize_btn.iconSize().scaled(16, 16, Qt.KeepAspectRatio))
+        self.minimize_btn.clicked.connect(self.parent.showMinimized)
+        self.minimize_btn.setToolTip("Свернуть")
+        layout.addWidget(self.minimize_btn)
+
+        self.maximize_btn = QPushButton()
+        self.maximize_btn.setObjectName("maximizeBtn")
+        self.maximize_btn.setIcon(maximize_icon)
+        self.maximize_btn.setIconSize(self.maximize_btn.iconSize().scaled(16, 16, Qt.KeepAspectRatio))
+        self.maximize_btn.clicked.connect(self.toggle_maximize)
+
+        # Проверяем, развернуто ли окно при запуске
+        if self.parent.isMaximized():
+            restore_icon = self.create_icon_from_svg(self.get_restore_svg(stroke_color), 16, 16)
+            self.maximize_btn.setIcon(restore_icon)
+            self.maximize_btn.setToolTip("Восстановить")
+        else:
+            self.maximize_btn.setToolTip("Развернуть")
+
+        layout.addWidget(self.maximize_btn)
+
+        self.close_btn = QPushButton()
+        self.close_btn.setObjectName("closeBtn")
+        self.close_btn.setIcon(close_icon)
+        self.close_btn.setIconSize(self.close_btn.iconSize().scaled(16, 16, Qt.KeepAspectRatio))
+        self.close_btn.clicked.connect(self.parent.close)
+        self.close_btn.setToolTip("Закрыть")
+        layout.addWidget(self.close_btn)
+
+        # Включаем перетаскивание окна
+        self.mousePressEvent = self.mouse_press_event
+        self.mouseMoveEvent = self.mouse_move_event
+        self.mouseReleaseEvent = self.mouse_release_event
+
+    def get_minimize_svg(self, stroke_color="#666666"):
+        return f"""<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M3 8H13" stroke="{stroke_color}" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>"""
+
+    def get_maximize_svg(self, stroke_color="#666666"):
+        return f"""<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="3" y="3" width="10" height="10" rx="1.5" stroke="{stroke_color}" stroke-width="1.2"/>
+        </svg>"""
+
+    def get_close_svg(self, stroke_color="#666666"):
+        return f"""<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4 4L12 12M12 4L4 12" stroke="{stroke_color}" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>"""
+
+    def get_restore_svg(self, stroke_color="#666666"):
+        return f"""<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="5" y="5" width="8" height="8" rx="1.2" stroke="{stroke_color}" stroke-width="1.2"/>
+            <rect x="3" y="3" width="8" height="8" rx="1.2" stroke="{stroke_color}" stroke-width="1.2" fill="{'#2d2d2d' if stroke_color == '#ffffff' else 'white'}"/>
+        </svg>"""
+
+    def create_icon_from_svg(self, svg_content, width, height):
+        """Создает QIcon из SVG строки"""
+        renderer = QSvgRenderer(QByteArray(svg_content.encode()))
+        pixmap = QPixmap(width, height)
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        renderer.render(painter)
+        painter.end()
+
+        return QIcon(pixmap)
+
+    def toggle_maximize(self):
+        stroke_color = "#ffffff" if (hasattr(self.parent, 'incognito') and self.parent.incognito) else "#666666"
+
+        if self.parent.isMaximized():
+            self.parent.showNormal()
+            maximize_icon = self.create_icon_from_svg(self.get_maximize_svg(stroke_color), 16, 16)
+            self.maximize_btn.setIcon(maximize_icon)
+            self.maximize_btn.setToolTip("Развернуть")
+        else:
+            self.parent.showMaximized()
+            restore_icon = self.create_icon_from_svg(self.get_restore_svg(stroke_color), 16, 16)
+            self.maximize_btn.setIcon(restore_icon)
+            self.maximize_btn.setToolTip("Восстановить")
+
+    def update_title(self, title):
+        # Оставляем заголовок без изменений или можно добавить название страницы
+        if hasattr(self.parent, 'incognito') and self.parent.incognito:
+            self.title_label.setText("POVTIAS CO. INC. BROWSER - ИНКОГНИТО")
+        else:
+            self.title_label.setText("POVTIAS CO. INC. BROWSER")
+
+    def mouse_press_event(self, event):
+        if event.button() == Qt.LeftButton:
+            self.dragging = True
+            self.drag_position = event.globalPos() - self.parent.frameGeometry().topLeft()
+            event.accept()
+
+    def mouse_move_event(self, event):
+        if self.dragging and not self.parent.isMaximized() and not self.parent.isFullScreen():
+            self.parent.move(event.globalPos() - self.drag_position)
+            event.accept()
+
+    def mouse_release_event(self, event):
+        self.dragging = False
+        event.accept()
+
+================================================================================
+browser.spec
+================================================================================
+
+# -*- mode: python ; coding: utf-8 -*-
+
+block_cipher = None
+
+a = Analysis(
+    ['main.py'],
+    pathex=[],
+    binaries=[],
+    datas=[('nav', 'nav')],  # Копируем папку с иконками
+    icon='nav/icon.png',
+    hiddenimports=[
+        'PyQt5',
+        'PyQt5.QtWidgets',
+        'PyQt5.QtCore',
+        'PyQt5.QtGui',
+        'PyQt5.QtWebEngineWidgets',
+        'PyQt5.QtSvg',
+        'PyQtWebEngine',
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
+    name='MyBrowser',  # Имя вашего exe-файла
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,  # False = без консольного окна
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)
+
+================================================================================
+.gitignore
+================================================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+
+================================================================================
+                         КОНЕЦ ФАЙЛА code.txt
+================================================================================
