@@ -12,7 +12,7 @@ class TabWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Создаем горизонтальный контейнер для панели вкладок и кнопки
+        # Создаем горизонтальный контейнер для панели вкладок и кнопок
         tab_container = QWidget()
         tab_layout = QHBoxLayout(tab_container)
         tab_layout.setContentsMargins(0, 0, 0, 0)
@@ -86,7 +86,7 @@ class TabWidget(QWidget):
             else:
                 browser = QWebEngineView()
                 # Используем стандартный профиль
-                
+
             browser.setUrl(qurl)
 
             # Настраиваем профиль для инкогнито - отключаем сохранение данных
@@ -96,6 +96,11 @@ class TabWidget(QWidget):
                 profile.setPersistentCookiesPolicy(QWebEngineProfile.NoPersistentCookies)
                 profile.setPersistentStoragePath("")  # Отключаем постоянное хранилище
 
+            # Подключаем сигнал загрузки
+            browser.page().profile().downloadRequested.connect(
+                self.browser_window.handle_download
+            )
+
             self.stack.addWidget(browser)
             self.browsers.append(browser)
 
@@ -103,7 +108,7 @@ class TabWidget(QWidget):
             tab_text = "● Загрузка..."
             if self.incognito:
                 tab_text = "🕶️ " + tab_text
-                
+
             index = self.tab_bar.addTab(tab_text)
             self.tab_bar.setTabData(index, {"loading": True, "url": qurl.toString(), "browser": browser})
             self.tab_bar.setCurrentIndex(index)
@@ -158,11 +163,11 @@ class TabWidget(QWidget):
                 title = browser.page().title()
                 if title:
                     short_title = title[:20] + "…" if len(title) > 20 else title
-                    
+
                     # Добавляем индикатор инкогнито
                     if self.incognito:
                         short_title = "🕶️ " + short_title
-                        
+
                     self.tab_bar.setTabText(index, f" {short_title}")
                     self.set_tab_loading(index, False)
 
@@ -178,7 +183,7 @@ class TabWidget(QWidget):
     def close_tab(self, index):
         if len(self.browsers) > 1:
             browser = self.browsers[index]
-            
+
             # Получаем профиль до удаления
             if self.incognito:
                 try:
@@ -189,17 +194,17 @@ class TabWidget(QWidget):
                     page.deleteLater()
                 except:
                     pass
-            
+
             self.stack.removeWidget(browser)
             browser.deleteLater()
             self.browsers.pop(index)
             self.tab_bar.removeTab(index)
-            
+
             # Очищаем неиспользуемые профили
             if self.incognito:
                 # Оставляем только профили для существующих браузеров
                 self.profiles = [p for p in self.profiles if any(
-                    hasattr(b.page(), 'profile') and b.page().profile() == p 
+                    hasattr(b.page(), 'profile') and b.page().profile() == p
                     for b in self.browsers
                 )]
         else:
