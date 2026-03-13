@@ -434,9 +434,7 @@ class NavigationBar(QWidget):
         theme_menu = menu.addMenu(self.create_icon(self.get_svg_icon("theme", icon_color), 16), " Тема оформления")
         for theme_name in self.browser_window.theme_switcher.get_theme_names():
             theme_info = self.browser_window.theme_switcher.THEMES[theme_name]
-            # Используем create_icon для создания иконки из SVG строки темы
-            theme_icon = self.create_icon(theme_info["icon"], 16)
-            action = theme_menu.addAction(theme_icon, f" {theme_info['name']}")
+            action = theme_menu.addAction(f" {theme_info['name']}")
             action.triggered.connect(lambda checked, t=theme_name: self.browser_window.change_theme(t))
 
         menu.addSeparator()
